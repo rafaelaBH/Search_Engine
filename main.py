@@ -6,7 +6,10 @@ import os
 import re
 from datetime import datetime
 
+
 class SymptomSearchEngine:
+    MIN_MATCH_SCORE = 0.45  # Minimum cosine similarity score to accept a symptom match
+
     def __init__(self, data_path, log_path="search_history.txt"):
         self.log_path = log_path
         self.severity_map = {}
@@ -49,44 +52,50 @@ class SymptomSearchEngine:
         else:
             return "cannot determine the level of risk"
 
-    def __input_proccesor(self, given_input : str) -> list:
+    def __input_proccesor(self, given_input: str) -> list:
 
         # splits user input by key-words to assess each symptom separately
         key_words = r",| and | with | plus"
         user_symptoms = [s.strip() for s in re.split(key_words, given_input.lower()) if s.strip()]
         return user_symptoms
 
+    def severity_assessment(self, given_input: str, k: int = 1):
 
-    def severity_assessment(self, given_input : str):
-
-        # if the score is below the minimum, the symptom is considered unknown
-        MIN_SCORE = 0.45
         user_symptoms = self.__input_proccesor(given_input)
         max_severity = 0
         symptoms_to_return = []
         scores_to_return = []
         unknown = []
+
         for s in user_symptoms:
 
-            # finding most likely symptom
+            # finding k most likely symptoms
             input_vector = self.model.encode([s])
             scores = cosine_similarity(input_vector, self.symptoms_embeddings)[0]
-            most_likely = np.argmax(scores)
 
-            if scores[most_likely] >= MIN_SCORE:
-                scores_to_return.append(scores[most_likely])
-                symptom = self.symptoms_list[most_likely]
-                symptoms_to_return.append(symptom)
-                severity = self.severity_map[symptom]
-                max_severity = max(max_severity, severity)
-                self.__log_transaction(s, symptom, scores[most_likely])
-            else:
+            # get top-k indices sorted by score descending
+            top_k_indices = np.argsort(scores)[-k:][::-1]
+
+            matched_any = False
+            for idx in top_k_indices:
+                if scores[idx] >= self.MIN_MATCH_SCORE:
+                    scores_to_return.append(scores[idx])
+                    symptom = self.symptoms_list[idx]
+                    symptoms_to_return.append(symptom)
+                    severity = self.severity_map[symptom]
+                    max_severity = max(max_severity, severity)
+                    self.__log_transaction(s, symptom, scores[idx])
+                    matched_any = True
+
+            if not matched_any:
                 unknown.append(s)
+
         risk_report = self.conclusion(max_severity)
         return scores_to_return, symptoms_to_return, risk_report, unknown
 
+
 if __name__ == "__main__":
-    # initialization
+    # Creates engine
     try:
         engine = SymptomSearchEngine('Symptom_severity.csv')
     except Exception as e:
@@ -98,16 +107,27 @@ if __name__ == "__main__":
     print("  Powered by Sentence-Transformers & Cosine Similarity")
     print("=" * 55)
 
+    # Get k from user once
+    while True:
+        try:
+            k = int(input("\nHow many top results per symptom would you like? (default 1): ").strip() or "1")
+            if k >= 1:
+                break
+            print("Please enter a number >= 1")
+        except ValueError:
+            print("Please enter a valid number")
+
     while True:
         given_input = input("\nDescribe symptoms (e.g. 'cough and fever' or 'q' to quit): ").strip()
         if given_input.lower() in ['q', 'quit']:
             print("Quited")
             break
 
-        if not given_input: continue
+        if not given_input:
+            continue
 
         # Execute assessment
-        scores, names, risk, unrecognized = engine.severity_assessment(given_input)
+        scores, names, risk, unrecognized = engine.severity_assessment(given_input, k=k)
 
         print(f"\n[ANALYSIS SUMMARY]")
         print(f"Assessed risk: {risk.upper()}")
@@ -120,7 +140,7 @@ if __name__ == "__main__":
         else:
             print("- No valid medical symptoms identified.")
 
-        # In case of an unknown term
+        # In case of an unknown symptom
         if unrecognized:
             print(f"\n[!] Note: The following terms were not recognized:")
             print(f"    {', '.join(unrecognized)}")
